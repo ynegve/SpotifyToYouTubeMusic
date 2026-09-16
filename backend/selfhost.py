@@ -3,7 +3,9 @@
 Before running this file:
 
 1. Copy the request headers from an authenticated ``music.youtube.com``
-   ``/browse`` request into ``youtubemusic.json``.
+   ``/browse`` request into ``youtubemusic.json``. Take the copy in a
+   private/incognito window and close that window afterwards without
+   signing out; see ``_AUTH_PASTE_HELP`` below for why that matters.
 2. Choose which playlists to transfer, either by
    (a) running ``list_playlists.py`` and deleting unwanted rows from the
        generated ``playlists.csv``, or
@@ -16,8 +18,11 @@ The first run converts the pasted headers in ``youtubemusic.json`` into the
 ytmusicapi authentication format. Future runs can reuse that generated JSON
 until the browser session expires.
 
-If the YouTube Music headers expire mid-transfer (common for large
-playlists), the script stops and asks for a fresh set of headers. Paste
+Credentials are checked against YouTube Music at startup, so a stale paste
+is reported before any work begins rather than part-way through a queue.
+
+If the YouTube Music headers expire mid-transfer, the script stops and asks
+for a fresh set of headers. Paste
 them into ``youtubemusic.json``, SAVE the file, and run the script again; the
 partial progress stored in ``transfer_progress.json`` is detected on
 startup and the transfer resumes where it stopped. Setting a different
@@ -56,6 +61,32 @@ _PLAYLIST_ID_PATTERN = re.compile(r"^[A-Za-z0-9]{22}$")
 _PLACEHOLDER_SPOTIFY_LINK = "https://open.spotify.com/playlist/2nncn5UUUVQdQaRb6lKwB0 "
 _PROGRESS_BAR_WIDTH = 24
 _AUTH_ERROR_MARKERS = ("HTTP 401", "HTTP 403", "UNAUTHENTICATED", "unauthorized")
+# Cookies Google re-issues every few minutes. They authenticate nothing on
+# their own, but a stale copy is treated as a reason to reject the whole
+# session, which is the usual cause of credentials dying within hours.
+_VOLATILE_COOKIES = frozenset(
+    {
+        "__Secure-1PSIDTS",
+        "__Secure-3PSIDTS",
+        "SIDCC",
+        "__Secure-1PSIDCC",
+        "__Secure-3PSIDCC",
+    }
+)
+_AUTH_PASTE_HELP = (
+    "  1. Open a PRIVATE / INCOGNITO browser window.\n"
+    "  2. Sign in at music.youtube.com in that window.\n"
+    "  3. Press F12 and open Network, type 'browse' in the filter box, reload\n"
+    "     the page, then right-click a POST /browse request whose status is\n"
+    "     200 and choose Copy -> Copy as cURL.\n"
+    "  4. Delete the contents of youtubemusic.json, paste, and SAVE (Ctrl+S).\n"
+    "  5. CLOSE the incognito window. Do NOT click 'Sign out'.\n"
+    "\n"
+    "Step 5 is the one that matters. Google advances the session for as long\n"
+    "as a browser keeps using it, and that invalidates the copy you pasted.\n"
+    "Closing the window leaves the session untouched so the copy keeps\n"
+    "working; signing out ends it immediately and the copy dies with it."
+)
 
 
 class AuthExpiredError(RuntimeError):
@@ -736,13 +767,55 @@ def parse_browser_headers(raw_headers: str) -> dict[str, object]:
     return dict(normalized_headers)
 
 
-def load_ytmusic(auth_path: Path = YTMUSIC_AUTH_PATH) -> YTMusic:
+def _without_volatile_cookies(auth_config: Mapping[str, object]) -> dict[str, object]:
+    """Return the auth config with Google's short-lived cookies removed."""
+
+    cookie = auth_config.get("cookie")
+    if not isinstance(cookie, str):
+        return dict(auth_config)
+
+    kept = [
+        part
+        for part in (piece.strip() for piece in cookie.split(";"))
+        if part and part.split("=", 1)[0] not in _VOLATILE_COOKIES
+    ]
+    if not kept:
+        return dict(auth_config)
+
+    trimmed = dict(auth_config)
+    trimmed["cookie"] = "; ".join(kept)
+    return trimmed
+
+
+def _signed_in_account(ytmusic: YTMusic) -> str | None:
+    """Return the signed-in account name, or None when not authenticated.
+
+    YouTube answers an unauthenticated request with HTTP 200 and a logged-out
+    payload rather than a 401, so the only reliable check is asking for
+    something only a signed-in account has. ytmusicapi fails while parsing
+    that payload, which is why every exception counts as "not signed in".
+    """
+
+    try:
+        info = ytmusic.get_account_info()
+    except Exception:
+        return None
+
+    name = info.get("accountName") if isinstance(info, Mapping) else None
+    return name.strip() if isinstance(name, str) and name.strip() else None
+
+
+def load_ytmusic(auth_path: Path = YTMUSIC_AUTH_PATH, *, verify: bool = True) -> YTMusic:
     """Load YTMusic auth from pasted headers or an existing auth JSON file.
 
     ytmusicapi.setup() writes the normalized credentials back to ``auth_path``
     when the file contains raw browser request headers. A JSON auth file is
     reused directly, so rerunning the script does not try to parse JSON as
     plain-text headers.
+
+    Unless ``verify`` is false, the credentials are checked against YouTube
+    Music before returning, so a stale paste is reported at startup instead
+    of part-way through a long queue of playlists.
     """
 
     if not auth_path.is_file():
@@ -765,7 +838,30 @@ def load_ytmusic(auth_path: Path = YTMUSIC_AUTH_PATH) -> YTMusic:
         json.dumps(auth_config, ensure_ascii=True, indent=4, sort_keys=True),
         encoding="utf-8",
     )
-    return YTMusic(auth_config)
+
+    if not verify:
+        return YTMusic(auth_config)
+
+    # Dropping the volatile cookies is what makes a pasted session last, but
+    # it is not worth failing over: if the trimmed set is rejected, exactly
+    # what the user pasted is tried before giving up.
+    trimmed = _without_volatile_cookies(auth_config)
+    candidates = [trimmed]
+    if trimmed.get("cookie") != auth_config.get("cookie"):
+        candidates.append(dict(auth_config))
+
+    for candidate in candidates:
+        ytmusic = YTMusic(candidate)
+        account = _signed_in_account(ytmusic)
+        if account is not None:
+            print(f"YouTube Music: signed in as {account}")
+            return ytmusic
+
+    raise ValueError(
+        "The credentials in youtubemusic.json are not signed in to YouTube "
+        "Music. They have expired, or the copy was taken from a browser "
+        "session that has since moved on.\n\n" + _AUTH_PASTE_HELP
+    )
 
 
 def _unwrap_spotify_track(item: object) -> Mapping[str, object] | None:
@@ -1070,9 +1166,13 @@ def transfer_playlists() -> list[dict[str, object]]:
         return done
 
     if len(queue) > 1:
-        print(
-            f"{len(queue)} playlists configured; {len(pending)} still to transfer"
-        )
+        if done:
+            print(
+                f"{len(queue)} playlists configured: {len(done)} already "
+                f"transferred, {len(pending)} to go"
+            )
+        else:
+            print(f"{len(queue)} playlists configured")
 
     # youtubemusic.json is re-read and re-parsed on every run, so headers pasted
     # after an auth expiry are always picked up before resuming.
@@ -1081,6 +1181,10 @@ def transfer_playlists() -> list[dict[str, object]]:
     for position, (link, playlist_id) in enumerate(pending, start=1):
         if position > 1:
             print()
+
+        # Counted against the whole queue rather than the pending slice, so
+        # the number does not restart at 1 after a resume.
+        marker = f"[playlist {len(done) + 1}/{len(queue)}]"
 
         saved = progress.get("current")
         resuming = (
@@ -1092,13 +1196,13 @@ def transfer_playlists() -> list[dict[str, object]]:
         if resuming:
             current = dict(saved)
             print(
-                f"[{position}/{len(pending)}] Resuming '{current['playlist_name']}' "
+                f"{marker} Resuming '{current['playlist_name']}' "
                 f"({current.get('searched') or 0}/{len(current['tracks'])} "
                 "tracks already searched)"
             )
         else:
             playlist_name = get_spotify_playlist_name(link)
-            print(f"[{position}/{len(pending)}] {playlist_name}")
+            print(f"{marker} {playlist_name}")
             tracks, skipped_tracks = get_spotify_tracks(playlist_id)
             current = {
                 "playlist_id": playlist_id,
@@ -1124,6 +1228,12 @@ def transfer_playlists() -> list[dict[str, object]]:
         _save_progress(progress)
 
         print(f"Created private YouTube Music playlist: {result['playlist_name']}")
+        if len(queue) > 1:
+            remaining = len(queue) - len(done)
+            print(
+                f"  Progress: {len(done)}/{len(queue)} playlists transferred"
+                + (f", {remaining} remaining" if remaining else " - all done")
+            )
 
     # Every playlist succeeded; nothing left to resume.
     _clear_progress()
@@ -1167,17 +1277,12 @@ def _print_auth_expired_instructions(error: AuthExpiredError) -> None:
                 file=sys.stderr,
             )
 
+    print("\nTo continue:", file=sys.stderr)
+    print(_AUTH_PASTE_HELP, file=sys.stderr)
     print(
-        "\nTo continue:\n"
-        "  1. Get a fresh set of request headers from an authenticated\n"
-        "     music.youtube.com /browse request (see the instructions on\n"
-        "     the website or in the README).\n"
-        "  2. Delete the contents of youtubemusic.json, paste the new headers\n"
-        "     into it, and SAVE the file (Ctrl+S) before closing the editor.\n"
-        "  3. Run this script again. It will pick up the new headers and\n"
-        "     resume exactly where the transfer stopped.\n"
-        "\nThere is no need to press anything here; just edit youtubemusic.json,\n"
-        "save it, and start the script again when ready.",
+        "\nThen run this script again. It picks up the new credentials and\n"
+        "resumes exactly where the transfer stopped. There is no need to press\n"
+        "anything here.",
         file=sys.stderr,
     )
 

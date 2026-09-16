@@ -33,6 +33,7 @@ to YouTube Music. It runs on your own computer against your own accounts.
 
 - [Install](#install)
 - [Step 1 - YouTube Music credentials](#step-1---youtube-music-credentials)
+  - [Why incognito](#why-incognito)
 - [Step 2 - Pick your playlists](#step-2---pick-your-playlists)
 - [Step 3 - Run the transfer](#step-3---run-the-transfer)
 - [If the transfer stops](#if-the-transfer-stops)
@@ -71,21 +72,53 @@ environment activated. Your prompt should start with `(venv)`.
 
 This tells the script it is allowed to create playlists on your account.
 
+Do this in a **private / incognito window**. It is not about privacy — it is
+what stops the credentials expiring every few hours. [Why](#why-incognito).
+
 1. Create `backend/youtubemusic.json` by copying the example:
 
    ```bash
    cp youtubemusic.json.example youtubemusic.json
    ```
 
-2. Open [music.youtube.com](https://music.youtube.com) and **sign in**.
-3. Press **F12** to open developer tools, then click the **Network** tab.
-4. In the filter box, type `browse`.
-5. Reload the page. A list of requests appears.
-6. Click a `browse` request whose **Status** is `200` and **Method** is `POST`.
-7. Copy it:
+2. Open a **private / incognito window** (`Cmd+Shift+N` / `Ctrl+Shift+N`).
+3. Go to [music.youtube.com](https://music.youtube.com) and **sign in** there.
+4. Press **F12** to open developer tools, then click the **Network** tab.
+5. In the filter box, type `browse`.
+6. Reload the page. A list of requests appears.
+7. Click a `browse` request whose **Status** is `200` and **Method** is `POST`.
+8. Copy it:
    - **Chrome / Edge:** right-click the request → **Copy** → **Copy as cURL**
    - **Firefox:** right-click the request → **Copy Value** → **Copy as cURL**
-8. Open `backend/youtubemusic.json`, delete everything in it, paste, and **save**.
+9. Open `backend/youtubemusic.json`, delete everything in it, paste, and **save**.
+10. **Close the incognito window.** Do **not** click "Sign out".
+
+> **Step 10 is the important one.** Closing the window without signing out is
+> what makes the credentials last. Your normal browser session is unaffected
+> either way.
+
+### Why incognito
+
+Google keeps advancing your login for as long as a browser is using it. Five of
+the cookies in that copied request — `__Secure-1PSIDTS`, `__Secure-3PSIDTS`,
+`SIDCC`, `__Secure-1PSIDCC` and `__Secure-3PSIDCC` — get re-issued every few
+minutes, and Google rejects the whole session when it is handed an outdated
+copy of them.
+
+So if you copy from your everyday signed-in tab and keep browsing, the copy you
+pasted goes stale quickly. That is why credentials taken the obvious way tend to
+die within hours.
+
+An incognito window gets its own separate session. Once you close it, nothing is
+using that session any more, so it stops advancing and the copy you pasted keeps
+working. Signing out does the opposite — it ends the session immediately and the
+copy dies with it.
+
+The script helps on its own too: it strips those five volatile cookies before
+connecting, since they authenticate nothing and only cause rejections. It then
+checks the credentials against YouTube Music at startup and prints the account
+it signed in as, so a stale paste is caught before any transferring begins
+rather than part-way through.
 
 > **Chrome's "Export HAR" does not work here.** Chrome strips the `cookie` and
 > `authorization` headers out of HAR exports by default, so the file arrives
@@ -202,7 +235,9 @@ YouTube Music credentials expire after a while, which you will notice on large
 libraries. When that happens the script **stops safely**, saves its place in
 `backend/transfer_progress.json`, and tells you what to do:
 
-1. Redo [Step 1](#step-1---youtube-music-credentials) to get fresh credentials.
+1. Redo [Step 1](#step-1---youtube-music-credentials) to get fresh credentials,
+   **including the incognito window and closing it afterwards** — that is what
+   keeps the next set alive longer than the last.
 2. Delete everything in `backend/youtubemusic.json`, paste the new copy, and **save**.
 3. Run `python3 selfhost.py` again.
 
@@ -261,6 +296,7 @@ pull request, or a chat.
 
 | Message | Fix |
 | --- | --- |
+| `The credentials in youtubemusic.json are not signed in to YouTube Music` | The paste is stale. Redo [Step 1](#step-1---youtube-music-credentials) in an incognito window and close it without signing out. |
 | `youtubemusic.json is a HAR export whose requests carry no cookie header` | Chrome sanitized the HAR. Use **Copy as cURL** (Step 1). |
 | `Parsed youtubemusic.json is missing the authorization header` | You copied only part of the request. Copy the whole thing again. |
 | `The "cookies" value in spotify.json does not contain sp_dc` | Copy the `sp_dc` cookie value, not the cookie name or another cookie. |
