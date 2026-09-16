@@ -10,20 +10,26 @@ once:
    and save the file.
 4. Run ``python3 selfhost.py``; it transfers whatever is left in the file.
 
-``playlists.csv`` has one playlist per row as ``name,playlist_id``, so
-reviewing it means deleting whole rows, in a text editor or a spreadsheet.
+``playlists.csv`` has one playlist per row as
+``name,playlist_id,track_count``, so reviewing it means deleting whole rows,
+in a text editor or a spreadsheet. Track counts need one request per playlist;
+pass ``--no-counts`` to skip them and finish in seconds.
 """
 
 from __future__ import annotations
 
+import argparse
 import csv
 import io
 import json
+import random
 import sys
+import time
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from spotapi import Config, Login, NoopLogger, PrivatePlaylist
+from spotapi import Config, Login, NoopLogger, PrivatePlaylist, PublicPlaylist
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -32,12 +38,22 @@ PLAYLISTS_PATH = BASE_DIR / "playlists.csv"
 
 _PLAYLIST_URI_PREFIX = "spotify:playlist:"
 # playlists.csv columns, in order. The name comes first so the file is
-# readable at a glance and sorts naturally in a spreadsheet.
-CSV_COLUMNS = ("name", "playlist_id")
+# readable at a glance and sorts naturally in a spreadsheet. track_count is
+# appended rather than inserted because selfhost.py falls back to reading the
+# ID from the second column when the header row has been deleted.
+CSV_COLUMNS = ("name", "playlist_id", "track_count")
 # Spotify caps a libraryV3 page at the requested limit and returns the real
 # size in totalCount, so the library has to be walked page by page. 500 is the
 # largest page size observed to come back intact.
 _LIBRARY_PAGE_SIZE = 500
+# Track counts cost one request per playlist. Sequentially that is roughly
+# half an hour for a large account, so they are fetched in a small pool.
+# Spotify throttles a sustained run of these regardless of how many threads
+# are used, so the pool is deliberately small and every failure is retried
+# with an exponential backoff; a throttled request succeeds moments later.
+_COUNT_WORKERS = 6
+_COUNT_RETRIES = 4
+_COUNT_BACKOFF_SECONDS = 2.0
 
 
 def _playlist_name(node: Mapping[str, object]) -> str:
@@ -226,7 +242,7 @@ def fetch_library_playlists(login: Login) -> list[dict[str, str]]:
         # Advance by what the server actually returned rather than by the
         # requested limit, so a short page cannot skip over entries.
         offset += len(items)
-        print(f"  scanned {min(offset, total)}/{total} library entries")
+        print(f"  scanned {min(offset, total)}/{total} library entries", flush=True)
 
         if offset >= total:
             break
@@ -239,6 +255,112 @@ def fetch_library_playlists(login: Login) -> list[dict[str, str]]:
         )
 
     return found
+
+
+def _playlist_track_count(playlist_id: str, retries: int) -> int | None:
+    """Return one playlist's track count, retrying through throttling.
+
+    Spotify starts refusing these after a sustained run of them. The refusal
+    is temporary and not distinguishable from a genuine failure by its shape,
+    so every error is retried before the count is given up on.
+    """
+
+    delay = _COUNT_BACKOFF_SECONDS
+    for attempt in range(retries + 1):
+        try:
+            response = PublicPlaylist(playlist_id).get_playlist_info(limit=1)
+            count = response["data"]["playlistV2"]["content"]["totalCount"]
+            return count if isinstance(count, int) else None
+        except Exception:
+            if attempt == retries:
+                return None
+            # Jitter keeps the pool's threads from retrying in lockstep and
+            # tripping the same limit again together.
+            time.sleep(delay + random.uniform(0.0, 0.5))
+            delay *= 2
+    return None
+
+
+def fetch_track_counts(
+    playlists: list[dict[str, str]],
+    workers: int = _COUNT_WORKERS,
+    retries: int = _COUNT_RETRIES,
+) -> int:
+    """Fill in each playlist's ``track_count`` in place; return how many failed.
+
+    The library response carries a count only for the pseudo-playlists (Liked
+    Songs, Your Episodes), never for real playlists, so every count costs its
+    own request. Playlists that already have a count are left alone, so a run
+    interrupted by throttling can be topped up rather than repeated.
+    """
+
+    pending = [p for p in playlists if not str(p.get("track_count", "")).strip()]
+    known = len(playlists) - len(pending)
+    if known:
+        print(f"  {known} playlist(s) already counted; fetching the other {len(pending)}", flush=True)
+    if not pending:
+        return 0
+
+    counted = 0
+    total = len(pending)
+
+    def fetch(playlist: dict[str, str]) -> tuple[dict[str, str], int | None]:
+        return playlist, _playlist_track_count(playlist["id"], retries)
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for playlist, count in pool.map(fetch, pending):
+            playlist["track_count"] = "" if count is None else str(count)
+            counted += 1
+            if counted % 25 == 0 or counted == total:
+                print(f"  counted {counted}/{total} playlists", flush=True)
+
+    failed = sum(1 for p in pending if not str(p.get("track_count", "")).strip())
+    if failed:
+        print(
+            f"  {failed} playlist(s) still have no count. They are usually "
+            "personalised playlists that cannot be read without being their "
+            "owner, or Spotify is still throttling. Re-run with "
+            "--counts-only to retry just those."
+        )
+    return failed
+
+
+def read_existing_playlists() -> list[dict[str, str]]:
+    """Read playlists.csv back, preserving row order.
+
+    Used by --counts-only, which tops up missing counts without re-listing the
+    library. Keeping the rows and their order identical matters: selfhost.py
+    discards saved transfer progress when the set of playlist IDs changes.
+    """
+
+    if not PLAYLISTS_PATH.is_file():
+        raise FileNotFoundError(
+            f"Could not find {PLAYLISTS_PATH.name}. Run this script without "
+            "--counts-only first to create it."
+        )
+
+    text = PLAYLISTS_PATH.read_text(encoding="utf-8-sig")
+    rows = list(csv.DictReader(io.StringIO(text, newline="")))
+    if not rows or "playlist_id" not in rows[0]:
+        raise ValueError(
+            f"{PLAYLISTS_PATH.name} needs its "
+            f"'{','.join(CSV_COLUMNS)}' header row for --counts-only to "
+            "know which column is which."
+        )
+
+    playlists: list[dict[str, str]] = []
+    for row in rows:
+        playlist_id = (row.get("playlist_id") or "").strip()
+        if not playlist_id:
+            continue
+        playlists.append(
+            {
+                "id": playlist_id,
+                "name": (row.get("name") or "").strip(),
+                "track_count": (row.get("track_count") or "").strip(),
+            }
+        )
+    return playlists
 
 
 def render_playlists_file(playlists: list[dict[str, str]]) -> str:
@@ -255,16 +377,73 @@ def render_playlists_file(playlists: list[dict[str, str]]) -> str:
     for playlist in playlists:
         # Collapse any newlines so one playlist always occupies one row.
         name = " ".join(playlist["name"].split())
-        writer.writerow([name, playlist["id"]])
+        writer.writerow([name, playlist["id"], playlist.get("track_count", "")])
 
     return buffer.getvalue()
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="List every Spotify playlist in your library into playlists.csv"
+    )
+    parser.add_argument(
+        "--no-counts",
+        action="store_true",
+        help="skip per-playlist track counts, which need one request each",
+    )
+    parser.add_argument(
+        "--counts-only",
+        action="store_true",
+        help=(
+            "do not re-list the library; only fill in missing track counts in "
+            "the existing playlists.csv, leaving every row and its order alone"
+        ),
+    )
+    args = parser.parse_args()
+
+    if args.counts_only:
+        try:
+            playlists = read_existing_playlists()
+            print(f"Topping up track counts in {PLAYLISTS_PATH.name}...")
+            fetch_track_counts(playlists)
+        except Exception as error:
+            print(f"Could not update track counts: {error}", file=sys.stderr)
+            return 1
+
+        PLAYLISTS_PATH.write_text(
+            render_playlists_file(playlists), encoding="utf-8", newline=""
+        )
+        filled = sum(1 for p in playlists if p.get("track_count"))
+        print(f"Updated {PLAYLISTS_PATH.name}: {filled}/{len(playlists)} rows have a track count")
+        return 0
+
     try:
         login = load_spotify_login()
         print("Fetching your Spotify library...")
         playlists = fetch_library_playlists(login)
+
+        if not args.no_counts:
+            # Counts already in the file are still valid for the same playlist,
+            # so a re-list after throttling does not pay for them twice.
+            if PLAYLISTS_PATH.is_file():
+                try:
+                    known = {
+                        previous["id"]: previous["track_count"]
+                        for previous in read_existing_playlists()
+                        if previous.get("track_count")
+                    }
+                except Exception:
+                    known = {}
+                for playlist in playlists:
+                    if playlist["id"] in known:
+                        playlist["track_count"] = known[playlist["id"]]
+
+            minutes = max(1, round(len(playlists) * 2.4 / _COUNT_WORKERS / 60))
+            print(
+                f"Counting tracks in {len(playlists)} playlists "
+                f"(roughly {minutes} minute(s); use --no-counts to skip)..."
+            )
+            fetch_track_counts(playlists)
     except Exception as error:
         print(f"Could not list your playlists: {error}", file=sys.stderr)
         return 1

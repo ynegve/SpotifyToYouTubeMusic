@@ -15,7 +15,8 @@ to YouTube Music. It runs on your own computer against your own accounts.
 >
 > - **Whole-library listing** — `list_playlists.py` reads every playlist in
 >   your Spotify account into a reviewable `playlists.csv`, paging through the
->   library so accounts with thousands of saved items are listed in full.
+>   library so accounts with thousands of saved items are listed in full, with
+>   a track count per playlist.
 > - **Bulk transfers** — many playlists in one run, from that reviewed file.
 > - **Resume after expiry** — YouTube Music credentials expire mid-run on large
 >   libraries; the transfer saves its place and picks up exactly where it left off.
@@ -177,11 +178,49 @@ This pages through your entire Spotify library, printing its progress, and
 writes `backend/playlists.csv`, one playlist per row:
 
 ```csv
-name,playlist_id
-Café con Leche,37i9dQZF1DXa3NnZWk6Z3T
-Road Trip,3ydrYAjx0aICD9neZbtPs7
-Focus,1aaaaaaaaaaaaaaaaaaaaa
+name,playlist_id,track_count
+Café con Leche,37i9dQZF1DXa3NnZWk6Z3T,142
+Road Trip,3ydrYAjx0aICD9neZbtPs7,58
+Focus,1aaaaaaaaaaaaaaaaaaaaa,1372
 ```
+
+`track_count` is there so you can see what you are signing up for before
+transferring — large playlists take the longest and are the most likely to hit
+an expired session part-way through. Spotify does not include counts in the
+library listing, so each one costs its own request; they are fetched in
+parallel, which takes a few minutes for a large account. To skip them:
+
+```bash
+python3 list_playlists.py --no-counts
+```
+
+**If counts come back empty**, Spotify is throttling. It starts refusing these
+after a sustained run of them, which on a large library means the counts simply
+stop part-way down the file. The refusal is temporary, so each one is retried
+with a widening delay, and counts already in the file are never fetched twice.
+To fill in whatever is still missing:
+
+```bash
+python3 list_playlists.py --counts-only
+```
+
+That reads the existing `playlists.csv`, fetches only the empty cells and
+writes it back. It does not re-list your library, and it leaves every row and
+its order untouched — which matters, because `selfhost.py` discards saved
+transfer progress whenever the set of playlist IDs changes. Rerun it until the
+file is full.
+
+A playlist that stays empty is a personalised one — `Your Top Songs 2025`,
+`Discover Weekly`, or a Blend shared with someone else. Those are generated per
+listener and cannot be read through the public endpoint at all, so no amount of
+retrying will fill them in. The
+count is informational — editing or deleting the column does not affect the
+transfer.
+
+> **Why so many playlists show exactly 50:** that is the real size. Spotify's
+> algorithmic playlists — anything called `X Radio`, `This Is X` or `Daily Mix
+> N` — are built to hold 50 tracks. It is not a cap in this tool; your own
+> playlists report their true length, into the thousands.
 
 **Review it.** Open `playlists.csv` in a text editor or a spreadsheet, **delete
 the rows for playlists you do not want**, and save. Keep the `name,playlist_id`
