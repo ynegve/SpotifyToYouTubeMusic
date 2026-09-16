@@ -8,7 +8,7 @@ const headerSteps = [
     "Open music.youtube.com and sign in to your Google account.",
     "Open your browser's developer tools, go to the Network tab, filter for /browse, and find a successful POST request with a 200 status.",
     "In Firefox, right-click the request and choose Copy > Copy Request Headers. In Chrome or Edge, open the request, select Headers, and copy everything from accept: */* to the end of Request Headers.",
-    "Paste the copied request headers into backend/browser.json and save the file. Paste them into the file instead of the web-hosted form.",
+    "Paste the copied request headers into backend/youtubemusic.json and save the file. Paste them into the file instead of the web-hosted form.",
 ];
 
 export default function Selfhost() {
@@ -99,7 +99,7 @@ pip install -r requirements.txt`}</CodeBlock>
                                     The script pauses the transfer and saves
                                     its progress when the headers expire.
                                     Delete the contents of{" "}
-                                    <InlineCode>browser.json</InlineCode>, get
+                                    <InlineCode>youtubemusic.json</InlineCode>, get
                                     a fresh set of headers from YouTube Music,
                                     paste them into the file, save it, and run
                                     the script again — it resumes from where

@@ -1,0 +1,25 @@
+# Virtual environments. Each venv also writes its own .gitignore, but that
+# file is easy to delete by accident, so they are named here too.
+venv/
+.venv/
+env/
+
+# Credentials and local secrets, at any depth
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials.json
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
