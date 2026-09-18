@@ -3,7 +3,7 @@
 Before running this file:
 
 1. Copy the request headers from an authenticated ``music.youtube.com``
-   ``/browse`` request into ``browser.json``. Take the copy in a
+   ``/browse`` request into ``youtubemusic.json``. Take the copy in a
    private/incognito window and close that window afterwards without
    signing out; see ``_AUTH_PASTE_HELP`` below for why that matters.
 2. Choose which playlists to transfer, either by
@@ -14,7 +14,7 @@ Before running this file:
    ``playlists.csv`` wins when it exists and lists at least one playlist.
 3. Run this file with the Python interpreter from ``backend/venv``.
 
-The first run converts the pasted headers in ``browser.json`` into the
+The first run converts the pasted headers in ``youtubemusic.json`` into the
 ytmusicapi authentication format. Future runs can reuse that generated JSON
 until the browser session expires.
 
@@ -23,7 +23,7 @@ is reported before any work begins rather than part-way through a queue.
 
 If the YouTube Music headers expire mid-transfer, the script stops and asks
 for a fresh set of headers. Paste
-them into ``browser.json``, SAVE the file, and run the script again; the
+them into ``youtubemusic.json``, SAVE the file, and run the script again; the
 partial progress stored in ``transfer_progress.json`` is detected on
 startup and the transfer resumes where it stopped. Setting a different
 playlist link in ``setup.py`` discards the saved progress and starts a
@@ -52,7 +52,10 @@ from setup import spotify_playlist_link
 
 
 BASE_DIR = Path(__file__).resolve().parent
-BROWSER_AUTH_PATH = BASE_DIR / "browser.json"
+YTMUSIC_AUTH_PATH = BASE_DIR / "youtubemusic.json"
+# The credentials file used to be called browser.json. It is still read when
+# it is the only one present, so an existing checkout keeps working.
+LEGACY_AUTH_PATH = BASE_DIR / "browser.json"
 PROGRESS_PATH = BASE_DIR / "transfer_progress.json"
 PLAYLISTS_PATH = BASE_DIR / "playlists.csv"
 _SPOTIFY_PLAYLIST_URL = "https://open.spotify.com/playlist/{}"
@@ -79,7 +82,7 @@ _AUTH_PASTE_HELP = (
     "  3. Press F12 and open Network, type 'browse' in the filter box, reload\n"
     "     the page, then right-click a POST /browse request whose status is\n"
     "     200 and choose Copy -> Copy as cURL.\n"
-    "  4. Delete the contents of browser.json, paste, and SAVE (Ctrl+S).\n"
+    "  4. Delete the contents of youtubemusic.json, paste, and SAVE (Ctrl+S).\n"
     "  5. CLOSE the incognito window. Do NOT click 'Sign out'.\n"
     "\n"
     "Step 5 is the one that matters. Google advances the session for as long\n"
@@ -538,7 +541,7 @@ def _curl_to_raw_headers(raw_text: str) -> str | None:
         tokens = shlex.split(command)
     except ValueError as error:
         raise ValueError(
-            "browser.json looks like a curl command but could not be read; "
+            "youtubemusic.json looks like a curl command but could not be read; "
             "copy it again with 'Copy as cURL' and paste it unmodified"
         ) from error
 
@@ -588,7 +591,7 @@ def _curl_to_raw_headers(raw_text: str) -> str | None:
 
     if not headers:
         raise ValueError(
-            "browser.json looks like a curl command but contains no request "
+            "youtubemusic.json looks like a curl command but contains no request "
             "headers; make sure you copied the whole command"
         )
 
@@ -660,7 +663,7 @@ def _har_to_raw_headers(value: object) -> str | None:
 
     if not entries:
         raise ValueError(
-            "browser.json is a HAR export with no recorded requests; record a "
+            "youtubemusic.json is a HAR export with no recorded requests; record a "
             "/browse request on music.youtube.com and export it again"
         )
 
@@ -695,13 +698,13 @@ def _har_to_raw_headers(value: object) -> str | None:
         if not saw_request:
             return None
         raise ValueError(
-            "browser.json is a HAR export whose requests carry no cookie "
+            "youtubemusic.json is a HAR export whose requests carry no cookie "
             "header. Chrome sanitizes HAR exports by default, stripping the "
             "cookie and authorization headers this tool needs.\n"
             "Either re-export the request with 'Copy as HAR (with sensitive "
             "data)', or paste the raw request headers instead: open the "
             "/browse POST, go to Headers > Request Headers, switch the view "
-            "to 'Raw', and copy the whole block into browser.json."
+            "to 'Raw', and copy the whole block into youtubemusic.json."
         )
 
     return "\n".join(f"{name}: {header}" for name, header in best_headers.items())
@@ -710,7 +713,7 @@ def _har_to_raw_headers(value: object) -> str | None:
 def parse_browser_headers(raw_headers: str) -> dict[str, object]:
     """Parse pasted headers into the JSON object expected by ``YTMusic``.
 
-    Plain request headers are intentionally allowed in ``browser.json``; the
+    Plain request headers are intentionally allowed in ``youtubemusic.json``; the
     file does not need to be valid JSON when the user pastes them. ytmusicapi's
     setup parser also adds the derived browser-auth headers required by YTMusic.
     """
@@ -738,7 +741,7 @@ def parse_browser_headers(raw_headers: str) -> dict[str, object]:
             raw_from_object = _header_object_to_raw_headers(parsed_headers)
         if raw_from_object is None:
             raise ValueError(
-                "browser.json contains JSON, but not browser request headers "
+                "youtubemusic.json contains JSON, but not browser request headers "
                 "or a ytmusicapi auth object"
             )
         raw_headers = raw_from_object
@@ -748,7 +751,7 @@ def parse_browser_headers(raw_headers: str) -> dict[str, object]:
         normalized_headers = json.loads(normalized_json)
     except Exception as error:
         raise ValueError(
-            "Could not parse browser.json as YouTube Music request headers"
+            "Could not parse youtubemusic.json as YouTube Music request headers"
         ) from error
 
     if not _is_auth_config(normalized_headers):
@@ -758,7 +761,7 @@ def parse_browser_headers(raw_headers: str) -> dict[str, object]:
         present = {str(key).lower() for key in normalized_headers}
         missing = sorted({"authorization", "cookie"} - present)
         raise ValueError(
-            "Parsed browser.json is missing the "
+            "Parsed youtubemusic.json is missing the "
             + " and ".join(missing)
             + f" header{'s' if len(missing) > 1 else ''}. Copy the complete "
             "Request Headers block from an authenticated /browse request, "
@@ -805,7 +808,7 @@ def _signed_in_account(ytmusic: YTMusic) -> str | None:
     return name.strip() if isinstance(name, str) and name.strip() else None
 
 
-def load_ytmusic(auth_path: Path = BROWSER_AUTH_PATH, *, verify: bool = True) -> YTMusic:
+def load_ytmusic(auth_path: Path = YTMUSIC_AUTH_PATH, *, verify: bool = True) -> YTMusic:
     """Load YTMusic auth from pasted headers or an existing auth JSON file.
 
     ytmusicapi.setup() writes the normalized credentials back to ``auth_path``
@@ -818,10 +821,25 @@ def load_ytmusic(auth_path: Path = BROWSER_AUTH_PATH, *, verify: bool = True) ->
     of part-way through a long queue of playlists.
     """
 
+    if (
+        not auth_path.is_file()
+        and auth_path == YTMUSIC_AUTH_PATH
+        and LEGACY_AUTH_PATH.is_file()
+        and LEGACY_AUTH_PATH.read_text(encoding="utf-8-sig").strip()
+    ):
+        # Renamed from browser.json, which said nothing about what it holds.
+        print(
+            f"Reading credentials from {LEGACY_AUTH_PATH.name}, which is now "
+            f"called {YTMUSIC_AUTH_PATH.name}. Rename it when convenient:\n"
+            f"  git mv backend/{LEGACY_AUTH_PATH.name} backend/{YTMUSIC_AUTH_PATH.name}"
+        )
+        auth_path = LEGACY_AUTH_PATH
+
     if not auth_path.is_file():
         raise FileNotFoundError(
-            f"Could not find {auth_path.name}; create it and paste your "
-            "authenticated YouTube Music request headers into it"
+            f"Could not find {auth_path.name}; copy "
+            f"{YTMUSIC_AUTH_PATH.name}.example to {YTMUSIC_AUTH_PATH.name} and "
+            "paste your authenticated YouTube Music request headers into it"
         )
 
     raw_headers = auth_path.read_text(encoding="utf-8-sig")
@@ -832,7 +850,7 @@ def load_ytmusic(auth_path: Path = BROWSER_AUTH_PATH, *, verify: bool = True) ->
 
     auth_config = parse_browser_headers(raw_headers)
 
-    # Persist the normalized object so browser.json becomes valid JSON after
+    # Persist the normalized object so youtubemusic.json becomes valid JSON after
     # the first run, while still accepting raw pasted headers as input.
     auth_path.write_text(
         json.dumps(auth_config, ensure_ascii=True, indent=4, sort_keys=True),
@@ -858,7 +876,7 @@ def load_ytmusic(auth_path: Path = BROWSER_AUTH_PATH, *, verify: bool = True) ->
             return ytmusic
 
     raise ValueError(
-        "The credentials in browser.json are not signed in to YouTube "
+        "The credentials in youtubemusic.json are not signed in to YouTube "
         "Music. They have expired, or the copy was taken from a browser "
         "session that has since moved on.\n\n" + _AUTH_PASTE_HELP
     )
@@ -1174,7 +1192,7 @@ def transfer_playlists() -> list[dict[str, object]]:
         else:
             print(f"{len(queue)} playlists configured")
 
-    # browser.json is re-read and re-parsed on every run, so headers pasted
+    # youtubemusic.json is re-read and re-parsed on every run, so headers pasted
     # after an auth expiry are always picked up before resuming.
     ytmusic = load_ytmusic()
 
@@ -1241,7 +1259,7 @@ def transfer_playlists() -> list[dict[str, object]]:
 
 
 def _print_auth_expired_instructions(error: AuthExpiredError) -> None:
-    """Tell the user how to refresh browser.json and resume the transfer."""
+    """Tell the user how to refresh youtubemusic.json and resume the transfer."""
 
     progress = _read_raw_progress()
     current = progress.get("current") if isinstance(progress, Mapping) else None

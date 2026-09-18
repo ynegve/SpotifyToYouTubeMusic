@@ -1,5 +1,4 @@
 *.json
-!browser.json
 !*.json.example
 *.txt
 test.py

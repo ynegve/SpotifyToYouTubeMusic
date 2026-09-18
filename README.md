@@ -52,17 +52,23 @@ This tells the script it is allowed to create playlists on your account.
 Do this in a **private / incognito window**. It is not about privacy — it is
 what stops the credentials expiring every few hours. [Why](#why-incognito).
 
-1. Open a **private / incognito window** (`Cmd+Shift+N` / `Ctrl+Shift+N`).
-2. Go to [music.youtube.com](https://music.youtube.com) and **sign in** there.
-3. Press **F12** to open developer tools, then click the **Network** tab.
-4. In the filter box, type `browse`.
-5. Reload the page. A list of requests appears.
-6. Click a `browse` request whose **Status** is `200` and **Method** is `POST`.
-7. Copy it:
+1. Create `backend/youtubemusic.json` by copying the example:
+
+   ```bash
+   cp youtubemusic.json.example youtubemusic.json
+   ```
+
+2. Open a **private / incognito window** (`Cmd+Shift+N` / `Ctrl+Shift+N`).
+3. Go to [music.youtube.com](https://music.youtube.com) and **sign in** there.
+4. Press **F12** to open developer tools, then click the **Network** tab.
+5. In the filter box, type `browse`.
+6. Reload the page. A list of requests appears.
+7. Click a `browse` request whose **Status** is `200` and **Method** is `POST`.
+8. Copy it:
    - **Chrome / Edge:** right-click the request → **Copy** → **Copy as cURL**
    - **Firefox:** right-click the request → **Copy Value** → **Copy as cURL**
-8. Open `backend/browser.json`, delete everything in it, paste, and **save**.
-9. **Close the incognito window.** Do **not** click "Sign out".
+9. Open `backend/youtubemusic.json`, delete everything in it, paste, and **save**.
+10. **Close the incognito window.** Do **not** click "Sign out".
 
 > **The last step is the important one.** Closing the window without signing out is
 > what makes the credentials last. Your normal browser session is unaffected
@@ -97,7 +103,7 @@ rather than part-way through.
 > tick **Allow to generate HAR with sensitive data** in the developer tools
 > settings (F1 → Preferences → Network) first.
 
-`browser.json` accepts any of these, so paste whichever your browser gives
+`youtubemusic.json` accepts any of these, so paste whichever your browser gives
 you. It does not have to be valid JSON when you paste it; the first run
 converts whatever you pasted into the normalized ytmusicapi format.
 
@@ -246,7 +252,7 @@ libraries. When that happens the script **stops safely**, saves its place in
 1. Redo [Step 1](#step-1---youtube-music-credentials) to get fresh credentials,
    **including the incognito window and closing it afterwards** — that is what
    keeps the next set alive longer than the last.
-2. Delete everything in `backend/browser.json`, paste the new copy, and **save**.
+2. Delete everything in `backend/youtubemusic.json`, paste the new copy, and **save**.
 3. Run `python3 selfhost.py` again.
 
 It resumes exactly where it stopped. Playlists already created are **not**
@@ -259,19 +265,22 @@ discards the saved progress and starts fresh.
 
 ## Keep your credentials out of git
 
-`browser.json` holds a live Google session and `spotify.json` holds a live
+`youtubemusic.json` holds a live Google session and `spotify.json` holds a live
 Spotify session. Anyone with those files can sign in as you.
 
-`spotify.json`, `playlists.csv` and `transfer_progress.json` are in
-`.gitignore`. `browser.json` is **tracked** by this repository, so run this
-once to stop git seeing your changes to it:
+Both are in `.gitignore`, along with `playlists.csv` and
+`transfer_progress.json`; only the `.example` files are tracked. Nothing for
+you to do — but never paste the contents of either real file into an issue, a
+pull request, or a chat.
 
-```bash
-git update-index --skip-worktree backend/browser.json
-```
-
-Never paste the contents of either file into an issue, a pull request, or a
-chat.
+> **Upgrading?** This file used to be called `browser.json`, and used to be
+> tracked by the repository. It is still read if it is the only one present,
+> so nothing breaks, but renaming it drops the old
+> `git update-index --skip-worktree` workaround:
+>
+> ```bash
+> git mv backend/browser.json backend/youtubemusic.json
+> ```
 
 ---
 
@@ -301,9 +310,9 @@ chat.
 
 | Message | Fix |
 | --- | --- |
-| `The credentials in browser.json are not signed in to YouTube Music` | The paste is stale. Redo [Step 1](#step-1---youtube-music-credentials) in an incognito window and close it without signing out. |
-| `browser.json is a HAR export whose requests carry no cookie header` | Chrome sanitized the HAR. Use **Copy as cURL** (Step 1). |
-| `Parsed browser.json is missing the authorization header` | You copied only part of the request. Copy the whole thing again. |
+| `The credentials in youtubemusic.json are not signed in to YouTube Music` | The paste is stale. Redo [Step 1](#step-1---youtube-music-credentials) in an incognito window and close it without signing out. |
+| `youtubemusic.json is a HAR export whose requests carry no cookie header` | Chrome sanitized the HAR. Use **Copy as cURL** (Step 1). |
+| `Parsed youtubemusic.json is missing the authorization header` | You copied only part of the request. Copy the whole thing again. |
 | `The "cookies" value in spotify.json does not contain sp_dc` | Copy the `sp_dc` cookie value, not the cookie name or another cookie. |
 | `playlists.csv row 4 has an invalid Spotify playlist ID` | That row was edited badly. Fix or delete the row. |
 | `playlists.csv lists no playlists` | You deleted every row. Regenerate it or delete the file. |
